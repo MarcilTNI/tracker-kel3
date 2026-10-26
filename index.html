@@ -35,7 +35,10 @@
           <label class="field-label" for="auth-username">Username</label>
           <input id="auth-username" name="username" type="text" minlength="3" maxlength="30" autocomplete="username" required />
           <label class="field-label" for="auth-password">Password</label>
-          <input id="auth-password" name="password" type="password" maxlength="128" autocomplete="current-password" required />
+          <div class="password-field">
+            <input id="auth-password" name="password" type="password" maxlength="128" autocomplete="current-password" aria-describedby="auth-hint" required />
+            <button class="password-toggle material-symbols-rounded" id="password-toggle" type="button" aria-label="Tampilkan password" aria-controls="auth-password" aria-pressed="false" title="Tampilkan password">visibility</button>
+          </div>
           <p class="auth-hint hidden" id="auth-hint">Username 3–30 karakter; password minimal 8 karakter.</p>
           <p class="form-error hidden" id="auth-error" role="alert"></p>
           <button class="button button-primary auth-submit" id="auth-submit" type="submit">Masuk</button>

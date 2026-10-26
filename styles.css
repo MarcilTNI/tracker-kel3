@@ -1204,6 +1204,36 @@ input:focus {
 .auth-form input {
   width: 100%;
 }
+.password-field {
+  position: relative;
+}
+.password-field input {
+  padding-right: 46px;
+}
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #697887;
+  font-size: 19px;
+}
+.password-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--green);
+}
+.password-toggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
 .auth-hint {
   margin: 10px 0 0;
   color: #89938b;
@@ -1274,6 +1304,9 @@ input:focus {
 [data-theme="dark"] .auth-card {
   border-color: var(--line);
   background: var(--surface);
+}
+[data-theme="dark"] .password-toggle {
+  color: #b4c0ca;
 }
 [data-theme="dark"] .auth-description,
 [data-theme="dark"] .auth-hint,

@@ -375,6 +375,17 @@ function setAuthMode(mode) {
   password.autocomplete = isRegistering ? "new-password" : "current-password";
   if (isRegistering) password.minLength = 8;
   else password.removeAttribute("minlength");
+  setPasswordVisibility(false);
+}
+
+function setPasswordVisibility(visible) {
+  const password = document.getElementById("auth-password");
+  const toggle = document.getElementById("password-toggle");
+  password.type = visible ? "text" : "password";
+  toggle.textContent = visible ? "visibility_off" : "visibility";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute("aria-label", visible ? "Sembunyikan password" : "Tampilkan password");
+  toggle.title = visible ? "Sembunyikan password" : "Tampilkan password";
 }
 
 function showAuth() {
@@ -398,6 +409,11 @@ async function loadAuthenticatedData() {
 document.getElementById("auth-switch").addEventListener("click", () => {
   setAuthMode(authMode === "login" ? "register" : "login");
   document.getElementById("auth-error").classList.add("hidden");
+});
+
+document.getElementById("password-toggle").addEventListener("click", () => {
+  const password = document.getElementById("auth-password");
+  setPasswordVisibility(password.type === "password");
 });
 
 document.getElementById("auth-form").addEventListener("submit", async (event) => {

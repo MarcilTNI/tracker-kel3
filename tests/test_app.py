@@ -68,6 +68,31 @@ class ExpenseTrackerApiTests(unittest.TestCase):
         self.assertEqual(login.json["username"], "test-user")
         self.assertEqual(wrong_password.status_code, 401)
 
+    def test_code_like_credentials_are_treated_as_plain_text(self) -> None:
+        username = "secure-user"
+        password = "quote' OR 1=1 --"
+        registration = self.client.post(
+            "/api/auth/register",
+            json={"username": username, "password": password},
+        )
+        valid_login = self.app.test_client().post(
+            "/api/auth/login",
+            json={"username": username, "password": password},
+        )
+        injected_username = self.app.test_client().post(
+            "/api/auth/login",
+            json={"username": "secure-user' OR '1'='1", "password": password},
+        )
+        injected_password = self.app.test_client().post(
+            "/api/auth/login",
+            json={"username": username, "password": "anything' OR 1=1 --"},
+        )
+
+        self.assertEqual(registration.status_code, 201)
+        self.assertEqual(valid_login.status_code, 200)
+        self.assertEqual(injected_username.status_code, 401)
+        self.assertEqual(injected_password.status_code, 401)
+
     def test_users_only_see_their_own_transactions_and_budgets(self) -> None:
         self.client.put("/api/budget", json={"amount": 2_000_000})
         self.client.post(
