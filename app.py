@@ -7,11 +7,12 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
-from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, abort, jsonify, request, send_from_directory, session
+import psycopg
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -72,21 +73,44 @@ def parse_transaction(payload: Any) -> dict[str, Any]:
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
+    secret_key = os.environ.get("RAPI_SECRET_KEY")
+    is_vercel = bool(os.environ.get("VERCEL"))
+    if is_vercel and not secret_key:
+        raise RuntimeError(
+            "RAPI_SECRET_KEY harus diatur sebagai environment variable di Vercel."
+        )
+    database_url = os.environ.get("DATABASE_URL")
+    if is_vercel and not database_url:
+        raise RuntimeError(
+            "DATABASE_URL harus diatur ke connection string PostgreSQL di Vercel."
+        )
     app.config.from_mapping(
+        DATABASE_URL=database_url,
         DATABASE=os.environ.get("RAPI_DATABASE", str(BASE_DIR / "instance" / "rapi.sqlite3")),
-        SECRET_KEY=os.environ.get("RAPI_SECRET_KEY") or secrets.token_hex(32),
+        SECRET_KEY=secret_key or secrets.token_hex(32),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=os.environ.get("RAPI_COOKIE_SECURE") == "1",
+        SESSION_COOKIE_SECURE=(
+            os.environ.get("RAPI_COOKIE_SECURE") == "1"
+            or is_vercel
+        ),
     )
     if test_config:
         app.config.update(test_config)
 
     @contextmanager
-    def connect_db() -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(app.config["DATABASE"])
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+    def connect_db() -> Iterator[Any]:
+        database_url = app.config.get("DATABASE_URL")
+        if database_url:
+            connection = psycopg.connect(
+                database_url,
+                row_factory=dict_row,
+                prepare_threshold=None,
+            )
+        else:
+            connection = sqlite3.connect(app.config["DATABASE"])
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
             connection.commit()
@@ -96,54 +120,101 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         finally:
             connection.close()
 
+    def execute(
+        connection: Any, query: str, parameters: Any = ()
+    ) -> Any:
+        if isinstance(connection, sqlite3.Connection):
+            return connection.execute(query, parameters)
+        return connection.execute(query.replace("?", "%s"), parameters)
+
     def initialize_database() -> None:
-        database = Path(app.config["DATABASE"])
-        database.parent.mkdir(parents=True, exist_ok=True)
+        is_postgres = bool(app.config.get("DATABASE_URL"))
+        if not is_postgres:
+            database = Path(app.config["DATABASE"])
+            database.parent.mkdir(parents=True, exist_ok=True)
         with connect_db() as connection:
-            for table in ("budgets", "transactions"):
-                exists = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                    (table,),
-                ).fetchone()
-                if exists:
-                    columns = {
-                        row["name"]
-                        for row in connection.execute(f"PRAGMA table_info({table})")
-                    }
-                    if "user_id" not in columns:
-                        connection.execute(f"DROP TABLE {table}")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                    password_hash TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS budgets (
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    month TEXT NOT NULL,
-                    amount INTEGER NOT NULL CHECK (amount > 0),
-                    PRIMARY KEY (user_id, month)
-                );
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    amount INTEGER NOT NULL CHECK (amount > 0),
-                    date TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS transactions_user_date_idx
-                    ON transactions(user_id, date);
-                """
-            )
+            if not is_postgres:
+                for table in ("budgets", "transactions"):
+                    exists = execute(
+                        connection,
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                        (table,),
+                    ).fetchone()
+                    if exists:
+                        columns = {
+                            row["name"]
+                            for row in execute(connection, f"PRAGMA table_info({table})")
+                        }
+                        if "user_id" not in columns:
+                            execute(connection, f"DROP TABLE {table}")
+            if is_postgres:
+                statements = (
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        username TEXT NOT NULL UNIQUE,
+                        password_hash TEXT NOT NULL
+                    )
+                    """,
+                    """
+                    CREATE TABLE IF NOT EXISTS budgets (
+                        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        month TEXT NOT NULL,
+                        amount BIGINT NOT NULL CHECK (amount > 0),
+                        PRIMARY KEY (user_id, month)
+                    )
+                    """,
+                    """
+                    CREATE TABLE IF NOT EXISTS transactions (
+                        id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        amount BIGINT NOT NULL CHECK (amount > 0),
+                        date TEXT NOT NULL
+                    )
+                    """,
+                    """
+                    CREATE INDEX IF NOT EXISTS transactions_user_date_idx
+                    ON transactions(user_id, date)
+                    """,
+                )
+                for statement in statements:
+                    execute(connection, statement)
+            else:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                        password_hash TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS budgets (
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        month TEXT NOT NULL,
+                        amount INTEGER NOT NULL CHECK (amount > 0),
+                        PRIMARY KEY (user_id, month)
+                    );
+                    CREATE TABLE IF NOT EXISTS transactions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        name TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        amount INTEGER NOT NULL CHECK (amount > 0),
+                        date TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS transactions_user_date_idx
+                        ON transactions(user_id, date);
+                    """
+                )
 
     def budget_for_month(
         connection: sqlite3.Connection, user_id: int, month: str
     ) -> int:
-        connection.execute(
+        execute(
+            connection,
             """
-            INSERT OR IGNORE INTO budgets (user_id, month, amount)
+            INSERT INTO budgets (user_id, month, amount)
             VALUES (
                 ?, ?,
                 COALESCE(
@@ -152,10 +223,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     ?
                 )
             )
+            ON CONFLICT(user_id, month) DO NOTHING
             """,
             (user_id, month, user_id, month, DEFAULT_BUDGET),
         )
-        row = connection.execute(
+        row = execute(
+            connection,
             "SELECT amount FROM budgets WHERE user_id = ? AND month = ?",
             (user_id, month),
         ).fetchone()
@@ -164,7 +237,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def month_summary(
         connection: sqlite3.Connection, user_id: int, month: str
     ) -> dict[str, Any]:
-        row = connection.execute(
+        row = execute(
+            connection,
             """
             SELECT COUNT(*) AS transaction_count, COALESCE(SUM(amount), 0) AS spent
             FROM transactions
@@ -182,7 +256,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def transaction_list(
         connection: sqlite3.Connection, user_id: int, month: str
     ) -> list[dict[str, Any]]:
-        rows = connection.execute(
+        rows = execute(
+            connection,
             """
             SELECT id, name, category, amount, date
             FROM transactions
@@ -229,7 +304,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not isinstance(user_id, int):
             return jsonify(authenticated=False)
         with connect_db() as connection:
-            user = connection.execute(
+            user = execute(
+                connection,
                 "SELECT username FROM users WHERE id = ?", (user_id,)
             ).fetchone()
         if user is None:
@@ -259,16 +335,23 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         try:
             with connect_db() as connection:
-                cursor = connection.execute(
-                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                    (username, generate_password_hash(password, method="scrypt")),
-                )
-                user_id = cursor.lastrowid
-        except sqlite3.IntegrityError:
+                row = execute(
+                    connection,
+                    """
+                    INSERT INTO users (username, password_hash) VALUES (?, ?)
+                    RETURNING id
+                    """,
+                    (
+                        username.lower(),
+                        generate_password_hash(password, method="scrypt"),
+                    ),
+                ).fetchone()
+                user_id = int(row["id"])
+        except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation):
             return jsonify(error="Username tersebut sudah digunakan."), 409
         session.clear()
         session["user_id"] = user_id
-        return jsonify(authenticated=True, username=username), 201
+        return jsonify(authenticated=True, username=username.lower()), 201
 
     @app.post("/api/auth/login")
     def login() -> Any:
@@ -280,9 +363,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not isinstance(username, str) or not isinstance(password, str):
             abort(400, description="Username dan password wajib diisi.")
         with connect_db() as connection:
-            user = connection.execute(
+            user = execute(
+                connection,
                 "SELECT id, username, password_hash FROM users WHERE username = ?",
-                (username.strip(),),
+                (username.strip().lower(),),
             ).fetchone()
         if user is None or not check_password_hash(user["password_hash"], password):
             return jsonify(error="Username atau password salah."), 401
@@ -302,7 +386,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         with connect_db() as connection:
             summary = month_summary(connection, user_id, month)
             summary["transactions"] = transaction_list(connection, user_id, month)
-            history = connection.execute(
+            history = execute(
+                connection,
                 """
                 SELECT substr(date, 1, 7) AS month
                 FROM transactions
@@ -322,14 +407,22 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user_id = int(session["user_id"])
         transaction = parse_transaction(request.get_json(silent=True))
         with connect_db() as connection:
-            cursor = connection.execute(
+            row = execute(
+                connection,
                 """
                 INSERT INTO transactions (user_id, name, category, amount, date)
-                VALUES (:user_id, :name, :category, :amount, :date)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id
                 """,
-                {"user_id": user_id, **transaction},
-            )
-            transaction["id"] = cursor.lastrowid
+                (
+                    user_id,
+                    transaction["name"],
+                    transaction["category"],
+                    transaction["amount"],
+                    transaction["date"],
+                ),
+            ).fetchone()
+            transaction["id"] = int(row["id"])
         return jsonify(transaction), 201
 
     @app.put("/api/budget")
@@ -344,7 +437,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
         month = current_month()
         with connect_db() as connection:
-            connection.execute(
+            execute(
+                connection,
                 """
                 INSERT INTO budgets (user_id, month, amount) VALUES (?, ?, ?)
                 ON CONFLICT(user_id, month) DO UPDATE SET amount = excluded.amount
@@ -358,7 +452,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user_id = int(session["user_id"])
         month = current_month()
         with connect_db() as connection:
-            rows = connection.execute(
+            rows = execute(
+                connection,
                 """
                 SELECT substr(date, 1, 7) AS month
                 FROM transactions
@@ -405,14 +500,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         transactions = [parse_transaction(item) for item in payload["transactions"]]
 
         with connect_db() as connection:
-            existing = connection.execute(
+            existing = execute(
+                connection,
                 "SELECT COUNT(*) AS count FROM transactions WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
             if existing["count"]:
                 return jsonify({"imported": False, "reason": "database_not_empty"})
             month = current_month()
-            connection.execute(
+            execute(
+                connection,
                 """
                 INSERT INTO budgets (user_id, month, amount) VALUES (?, ?, ?)
                 ON CONFLICT(user_id, month) DO UPDATE SET amount = excluded.amount
@@ -420,12 +517,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 (user_id, month, int(budget)),
             )
             for transaction in transactions:
-                connection.execute(
+                execute(
+                    connection,
                     """
                     INSERT INTO transactions (user_id, name, category, amount, date)
-                    VALUES (:user_id, :name, :category, :amount, :date)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    {"user_id": user_id, **transaction},
+                    (
+                        user_id,
+                        transaction["name"],
+                        transaction["category"],
+                        transaction["amount"],
+                        transaction["date"],
+                    ),
                 )
         return jsonify({"imported": True, "count": len(transactions)})
 

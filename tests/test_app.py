@@ -27,6 +27,19 @@ class ExpenseTrackerApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_directory.cleanup()
 
+    def test_vercel_requires_postgres_url_and_persistent_session_secret(self) -> None:
+        with patch.dict("os.environ", {"VERCEL": "1"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "RAPI_SECRET_KEY"):
+                create_app({"TESTING": True, "DATABASE": ":memory:"})
+
+        with patch.dict(
+            "os.environ",
+            {"VERCEL": "1", "RAPI_SECRET_KEY": "persistent-secret"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "DATABASE_URL"):
+                create_app({"TESTING": True, "DATABASE": ":memory:"})
+
     def test_data_endpoints_require_login(self) -> None:
         unauthenticated_client = self.app.test_client()
 

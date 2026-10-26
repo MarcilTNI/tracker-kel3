@@ -1,6 +1,6 @@
 # Acumalaka Tracker
 
-Acumalaka Tracker adalah expense tracker dengan frontend HTML/CSS/JavaScript dan backend Python Flask. Data anggaran dan transaksi disimpan secara lokal di SQLite.
+Acumalaka Tracker adalah expense tracker dengan frontend HTML/CSS/JavaScript dan backend Python Flask. Saat dijalankan lokal aplikasi memakai SQLite; jika `DATABASE_URL` tersedia, aplikasi memakai PostgreSQL.
 
 ## Menjalankan aplikasi
 
@@ -16,7 +16,7 @@ Acumalaka Tracker adalah expense tracker dengan frontend HTML/CSS/JavaScript dan
 
 3. Buka <http://127.0.0.1:5000> di browser.
 
-Database dibuat otomatis di `instance/rapi.sqlite3`. Jangan membuka `index.html` langsung dari file; jalankan server agar frontend dapat berkomunikasi dengan backend.
+Database lokal dibuat otomatis di `instance/rapi.sqlite3`. Pada PostgreSQL, tabel dibuat otomatis saat aplikasi mulai. Jangan membuka `index.html` langsung dari file; jalankan server agar frontend dapat berkomunikasi dengan backend.
 
 ## Akun dan privasi data
 
@@ -24,14 +24,16 @@ Pengguna dapat mendaftar tanpa email menggunakan username unik dan password (min
 
 Saat aplikasi versi akun pertama kali dijalankan pada database lama, transaksi dan anggaran lama yang belum memiliki pemilik akan dihapus. Data tersebut tidak dapat dipetakan dengan aman ke akun tertentu.
 
-Untuk lingkungan yang dipakai bersama atau dipublikasikan, atur `RAPI_SECRET_KEY` ke nilai acak rahasia yang tetap sama setiap aplikasi dijalankan. Di PowerShell, buat nilai acak dengan:
+Untuk deployment Vercel, tambahkan `DATABASE_URL` berisi connection string **Supabase Transaction pooler** dan `RAPI_SECRET_KEY` sebagai environment variables di pengaturan project Vercel. Jangan menyimpan nilai tersebut di kode atau Git. Gunakan URI pooler port `6543`; jangan gunakan Supabase publishable key sebagai URL database.
+
+Buat nilai acak rahasia untuk `RAPI_SECRET_KEY` dengan PowerShell:
 
 ```powershell
 python -c "import secrets; print(secrets.token_hex(32))"
 $env:RAPI_SECRET_KEY = "tempel-nilai-acak-di-sini"
 ```
 
-Gunakan HTTPS dan set `RAPI_COOKIE_SECURE=1` saat cookie sesi hanya boleh dikirim lewat HTTPS. Pengaturan bawaan yang lebih longgar ditujukan untuk pengembangan lokal.
+Setelah mengubah kode atau environment variables Vercel, deploy ulang. Gunakan HTTPS; cookie sesi otomatis ditandai secure di Vercel.
 
 ## Riwayat bulanan
 
