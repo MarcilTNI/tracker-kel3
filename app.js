@@ -22,6 +22,7 @@ const state = { month: "", budget: 0, transactions: [], history: [], archive: nu
 let toastTimeout;
 let profileStorageKey = PROFILE_KEY;
 let authMode = "login";
+let viewStack = ["dashboard"];
 
 function applyTheme(theme) {
   const isDark = theme === "dark";
@@ -261,7 +262,7 @@ function renderBudgetView(spent, remaining, percent, status) {
   document.getElementById("budget-view-percent").textContent = `${Math.round(spent / state.budget * 100)}% terpakai`;
 }
 
-function renderHistoryList() {
+function renderHistoryList(loadDetail = false) {
   const select = document.getElementById("history-month");
   const selectedMonth = select.value;
   select.innerHTML = state.history.map((summary) =>
@@ -273,7 +274,10 @@ function renderHistoryList() {
   document.getElementById("history-content").classList.toggle("hidden", state.history.length === 0);
   select.classList.toggle("hidden", state.history.length === 0);
   document.getElementById("history-print").classList.toggle("hidden", state.history.length === 0);
-  if (state.history.length && select.value) loadHistoryDetail(select.value);
+  if (loadDetail && state.history.length && select.value &&
+      state.archive?.month !== select.value) {
+    loadHistoryDetail(select.value);
+  }
 }
 
 async function loadHistoryDetail(month) {
@@ -322,8 +326,31 @@ const viewDetails = {
   history: { title: "Riwayat bulanan", breadcrumb: "Riwayat", subtitle: "Lihat dan cetak laporan pengeluaran bulan-bulan sebelumnya." },
 };
 
+function initializeViewNavigation() {
+  viewStack = ["dashboard"];
+  window.history.replaceState({ appBase: true, appView: "dashboard" }, "", window.location.href);
+  window.history.pushState({ appView: "dashboard", appViews: viewStack }, "", window.location.href);
+  updateBackButton();
+}
+
+function updateBackButton() {
+  document.getElementById("back-button").disabled = viewStack.length <= 1;
+}
+
+function navigateToView(viewName) {
+  if (!viewDetails[viewName] || viewStack[viewStack.length - 1] === viewName) return;
+  viewStack = [...viewStack, viewName];
+  window.history.pushState(
+    { appView: viewName, appViews: viewStack },
+    "",
+    window.location.href,
+  );
+  showView(viewName);
+}
+
 function showView(viewName) {
   const view = viewDetails[viewName] || viewDetails.dashboard;
+  viewName = viewDetails[viewName] ? viewName : "dashboard";
   document.querySelectorAll(".nav-item").forEach((item) =>
     item.classList.toggle("active", item.dataset.view === viewName));
   document.getElementById("page-title").textContent = view.title;
@@ -335,7 +362,8 @@ function showView(viewName) {
   ["transactions", "budget", "categories", "history"].forEach((name) =>
     document.getElementById(`${name}-view`).classList.toggle("hidden", name !== viewName));
   document.querySelector(".eyebrow").classList.toggle("hidden", viewName !== "dashboard");
-  if (viewName === "history") renderHistoryList();
+  updateBackButton();
+  if (viewName === "history") renderHistoryList(true);
 }
 
 function openDialog(dialog) {
@@ -397,6 +425,8 @@ function showApp(username) {
   document.getElementById("auth-page").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
   document.getElementById("account-username").textContent = username;
+  state.archive = null;
+  initializeViewNavigation();
   initializeProfile(username);
 }
 
@@ -480,13 +510,31 @@ document.querySelectorAll("[data-close-modal]").forEach((button) =>
   button.addEventListener("click", closeDialogs));
 
 document.querySelectorAll("[data-view]").forEach((button) =>
-  button.addEventListener("click", () => showView(button.dataset.view)));
+  button.addEventListener("click", () => navigateToView(button.dataset.view)));
 
 document.querySelectorAll("[data-view-link]").forEach((button) =>
   button.addEventListener("click", () => {
-    showView(button.dataset.viewLink);
+    navigateToView(button.dataset.viewLink);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
+
+document.getElementById("back-button").addEventListener("click", () => {
+  if (viewStack.length > 1) window.history.back();
+});
+
+window.addEventListener("popstate", (event) => {
+  if (document.getElementById("app-shell").classList.contains("hidden")) return;
+  if (event.state?.appBase) {
+    viewStack = ["dashboard"];
+    showView("dashboard");
+    window.history.pushState({ appView: "dashboard", appViews: viewStack }, "", window.location.href);
+    return;
+  }
+  if (viewDetails[event.state?.appView]) {
+    viewStack = Array.isArray(event.state.appViews) ? event.state.appViews : ["dashboard"];
+    showView(event.state.appView);
+  }
+});
 
 document.getElementById("transaction-filter").addEventListener("change", render);
 document.getElementById("history-month").addEventListener("change", (event) => loadHistoryDetail(event.target.value));
@@ -556,15 +604,24 @@ document.getElementById("transaction-form").addEventListener("submit", async (ev
     error.classList.remove("hidden");
     return;
   }
+  const submitButton = event.currentTarget.querySelector('[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Menyimpan...";
   try {
-    await api("/api/transactions", { method: "POST", body: JSON.stringify(transaction) });
+    const savedTransaction = await api("/api/transactions", {
+      method: "POST",
+      body: JSON.stringify(transaction),
+    });
+    state.transactions.unshift(savedTransaction);
     closeDialogs();
-    await loadDashboard();
     render();
     showToast("Pengeluaran berhasil dicatat.");
   } catch (requestError) {
     error.textContent = requestError.message;
     error.classList.remove("hidden");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "Simpan pengeluaran";
   }
 });
 
@@ -577,15 +634,24 @@ document.getElementById("budget-form").addEventListener("submit", async (event) 
     error.classList.remove("hidden");
     return;
   }
+  const submitButton = event.currentTarget.querySelector('[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Menyimpan...";
   try {
-    await api("/api/budget", { method: "PUT", body: JSON.stringify({ amount }) });
+    const result = await api("/api/budget", {
+      method: "PUT",
+      body: JSON.stringify({ amount }),
+    });
+    state.budget = result.budget;
     closeDialogs();
-    await loadDashboard();
     render();
     showToast("Batas anggaran berhasil diperbarui.");
   } catch (requestError) {
     error.textContent = requestError.message;
     error.classList.remove("hidden");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "Simpan anggaran";
   }
 });
 
